@@ -10,6 +10,7 @@
 html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0f; }
 body { font-family: 'Exo 2', sans-serif; color: white; user-select: none; }
 canvas { display: block; width: 100%; height: 100%; }
+body, canvas { touch-action: none; -webkit-touch-callout: none; }
 
 #menu, #guide {
     position: fixed;
@@ -319,6 +320,69 @@ canvas { display: block; width: 100%; height: 100%; }
     color: #333;
 }
 
+#mobile-controls {
+    position: absolute;
+    inset: 0;
+    display: none;
+    pointer-events: none;
+}
+
+#mobile-controls.active { display: block; }
+
+#mobile-controls .stick-base {
+    position: absolute;
+    bottom: 24px;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.04);
+}
+
+#move-zone { left: 22px; }
+#aim-zone { right: 22px; }
+
+#mobile-controls .stick-knob {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 46px;
+    height: 46px;
+    margin-left: -23px;
+    margin-top: -23px;
+    border-radius: 50%;
+    background: rgba(255,45,85,0.45);
+    border: 1px solid rgba(255,255,255,0.35);
+    transform: translate(0, 0);
+}
+
+#mobile-controls .btn-row {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    display: flex;
+    gap: 8px;
+    pointer-events: auto;
+}
+
+#mobile-controls .m-btn {
+    border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(12,12,18,0.75);
+    color: #ddd;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 7px 10px;
+    border-radius: 6px;
+}
+
+#mobile-controls .m-btn:active { transform: scale(0.97); }
+
+@media (max-width: 900px) {
+    #hud .controls { display: none; }
+    #mobile-controls { display: block; }
+}
+
 #game-over {
     position: fixed;
     top: 0; left: 0;
@@ -521,6 +585,15 @@ canvas { display: block; width: 100%; height: 100%; }
     <div class="health-bar"><div class="health-fill" id="health-fill"></div></div>
     <div class="lives" id="lives"></div>
     <div class="controls">WASD | CLICK | SHIFT | Q | ESC</div>
+    <div id="mobile-controls">
+        <div class="btn-row">
+            <button class="m-btn" id="mb-dash" type="button">DASH</button>
+            <button class="m-btn" id="mb-ult" type="button">ULT</button>
+            <button class="m-btn" id="mb-menu" type="button">MENU</button>
+        </div>
+        <div class="stick-base" id="move-zone"><div class="stick-knob" id="move-knob"></div></div>
+        <div class="stick-base" id="aim-zone"><div class="stick-knob" id="aim-knob"></div></div>
+    </div>
 </div>
 
 <div id="game-over">
@@ -547,6 +620,12 @@ let width, height, cx, cy;
 let player = {}, game = {}, enemies = [], coins = [], particles = [], traps = [], bullets = [], powerups = [];
 let running = false, keys = {}, mouseX = 0, mouseY = 0;
 let currentMode = 'survival';
+const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+const mobileInput = {
+    move: { active: false, id: null, dx: 0, dy: 0, x: 0, y: 0 },
+    aim: { active: false, id: null, dx: 0, dy: 0, x: 0, y: 0, fire: false }
+};
 
 const characters = [
     { id: 0, name: 'Runner', color: '#00d4ff', cost: 0, icon: '🏃' },
@@ -820,6 +899,7 @@ function startGame() {
     
     document.getElementById('menu').style.display = 'none';
     document.getElementById('hud').classList.add('active');
+    document.getElementById('mobile-controls').classList.toggle('active', isTouchDevice);
     
     if (currentMode === 'timed') showCombo('Survive 3 min!', '#00d4ff');
     else if (currentMode === 'hardcore') showCombo('NO MERCY!', '#ff2d55');
@@ -902,12 +982,117 @@ c.addEventListener('mousedown', e => { keys['mouse'] = true; mouseX = e.clientX;
 c.addEventListener('mouseup', () => keys['mouse'] = false);
 c.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
 
+function setStickKnob(id, x, y) {
+    const knob = document.getElementById(id);
+    if (!knob) return;
+    knob.style.transform = `translate(${x}px, ${y}px)`;
+}
+
+function resetMobileInput(type) {
+    if (type === 'move') {
+        mobileInput.move.active = false;
+        mobileInput.move.id = null;
+        mobileInput.move.dx = 0;
+        mobileInput.move.dy = 0;
+        setStickKnob('move-knob', 0, 0);
+        return;
+    }
+    mobileInput.aim.active = false;
+    mobileInput.aim.id = null;
+    mobileInput.aim.dx = 0;
+    mobileInput.aim.dy = 0;
+    mobileInput.aim.fire = false;
+    setStickKnob('aim-knob', 0, 0);
+}
+
+function updateStick(type, touch) {
+    const zone = document.getElementById(type === 'move' ? 'move-zone' : 'aim-zone');
+    if (!zone) return;
+    const rect = zone.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const maxDist = rect.width * 0.34;
+    let dx = touch.clientX - centerX;
+    let dy = touch.clientY - centerY;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxDist) {
+        const ratio = maxDist / dist;
+        dx *= ratio;
+        dy *= ratio;
+    }
+    const nx = dx / maxDist;
+    const ny = dy / maxDist;
+    setStickKnob(type === 'move' ? 'move-knob' : 'aim-knob', dx, dy);
+    if (type === 'move') {
+        mobileInput.move.dx = nx;
+        mobileInput.move.dy = ny;
+    } else {
+        mobileInput.aim.dx = nx;
+        mobileInput.aim.dy = ny;
+        mobileInput.aim.fire = Math.hypot(nx, ny) > 0.2;
+        if (mobileInput.aim.fire) {
+            mouseX = cx + player.x + nx * 220;
+            mouseY = cy + player.y + ny * 220;
+        }
+    }
+}
+
+if (isTouchDevice) {
+    c.addEventListener('touchstart', e => {
+        for (const t of e.changedTouches) {
+            if (!mobileInput.move.active && t.clientX < width * 0.5) {
+                mobileInput.move.active = true;
+                mobileInput.move.id = t.identifier;
+                updateStick('move', t);
+            } else if (!mobileInput.aim.active && t.clientX >= width * 0.5) {
+                mobileInput.aim.active = true;
+                mobileInput.aim.id = t.identifier;
+                updateStick('aim', t);
+            }
+        }
+        e.preventDefault();
+    }, { passive: false });
+
+    c.addEventListener('touchmove', e => {
+        for (const t of e.changedTouches) {
+            if (mobileInput.move.active && t.identifier === mobileInput.move.id) updateStick('move', t);
+            if (mobileInput.aim.active && t.identifier === mobileInput.aim.id) updateStick('aim', t);
+        }
+        e.preventDefault();
+    }, { passive: false });
+
+    const endTouches = (e) => {
+        for (const t of e.changedTouches) {
+            if (mobileInput.move.active && t.identifier === mobileInput.move.id) resetMobileInput('move');
+            if (mobileInput.aim.active && t.identifier === mobileInput.aim.id) resetMobileInput('aim');
+        }
+    };
+    c.addEventListener('touchend', endTouches, { passive: true });
+    c.addEventListener('touchcancel', endTouches, { passive: true });
+}
+
 document.addEventListener('keydown', e => {
     keys[e.key] = true;
     if (e.key === 'Escape' && running) { running = false; showMenu(); }
     if (e.key === 'q' || e.key === 'Q') useUltimate();
 });
 document.addEventListener('keyup', e => keys[e.key] = false);
+
+document.getElementById('mb-dash').addEventListener('click', () => {
+    if (!running || player.dashTimer > 0) return;
+    player.dashTimer = 350;
+    player.vx += Math.cos(player.angle) * 18;
+    player.vy += Math.sin(player.angle) * 18;
+});
+document.getElementById('mb-ult').addEventListener('click', () => {
+    if (!running) return;
+    useUltimate();
+});
+document.getElementById('mb-menu').addEventListener('click', () => {
+    if (!running) return;
+    running = false;
+    showMenu();
+});
 
 function spawnEnemy() {
     if (game.wave % 5 === 0 && !bossSpawned && game.wave > 0) {
@@ -1013,6 +1198,10 @@ function update() {
     if (keys['s'] || keys['S'] || keys['ArrowDown']) dy = 1;
     if (keys['a'] || keys['A'] || keys['ArrowLeft']) dx = -1;
     if (keys['d'] || keys['D'] || keys['ArrowRight']) dx = 1;
+    if (mobileInput.move.active) {
+        dx = mobileInput.move.dx;
+        dy = mobileInput.move.dy;
+    }
     
     if (dx || dy) {
         player.vx += dx * speed * 0.22;
@@ -1020,7 +1209,8 @@ function update() {
         player.angle = Math.atan2(dy, dx);
     }
     
-    if (keys['mouse']) {
+    const wantsToShoot = keys['mouse'] || (mobileInput.aim.active && mobileInput.aim.fire);
+    if (wantsToShoot) {
         const aimAngle = Math.atan2(mouseY - cy - player.y, mouseX - cx - player.x);
         player.angle = aimAngle;
         if (player.attackCooldown <= 0) {
@@ -1036,7 +1226,7 @@ function update() {
     }
     if (player.attackCooldown > 0) player.attackCooldown -= dt;
     if (player.dashTimer > 0) player.dashTimer -= dt;
-    if (keys['Shift'] && player.dashTimer <= 0) {
+    if ((keys['Shift'] || keys['shift']) && player.dashTimer <= 0) {
         player.dashTimer = 350;
         player.vx += Math.cos(player.angle) * 18;
         player.vy += Math.sin(player.angle) * 18;
